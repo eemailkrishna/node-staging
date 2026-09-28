@@ -2,35 +2,55 @@ name: CI/CD
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
   pull_request:
-    branches: [main]
+    branches:
+      - main
+
+
+# ============================================================
+# CI
+# ============================================================
 
 jobs:
 
-  # ==========================================
-  # CI
-  # ==========================================
-
   ci:
-    name: CI - install, check, smoke test
+    name: CI - Test Node.js application
 
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        node-version: [18, 20, 22]
+        node-version:
+          - 18
+          - 20
+          - 22
 
     steps:
 
+      # --------------------------------------------------------
+      # Checkout
+      # --------------------------------------------------------
+
       - name: Checkout code
         uses: actions/checkout@v4
+
+
+      # --------------------------------------------------------
+      # Node.js
+      # --------------------------------------------------------
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+
+
+      # --------------------------------------------------------
+      # Install dependencies
+      # --------------------------------------------------------
 
       - name: Install dependencies
         run: |
@@ -40,144 +60,289 @@ jobs:
             npm install
           fi
 
-      - name: Syntax check
-        run: node --check server.js
 
-      - name: Smoke test
-        run: npm test
+      # --------------------------------------------------------
+      # Syntax check
+      # --------------------------------------------------------
+
+      - name: Syntax check
+        run: |
+          node --check server.js
+
+
+      # --------------------------------------------------------
+      # Test
+      # --------------------------------------------------------
+
+      - name: Run tests
+        run: |
+          npm test
         env:
           PORT: 3457
 
 
-  # ==========================================
+
+  # ============================================================
   # CD - STAGING
-  # ==========================================
+  # ============================================================
 
   cd-staging:
-    name: CD - deploy to staging
+    name: CD - Deploy to EC2 Staging
 
-    needs: ci
+    needs:
+      - ci
 
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Deploy only when main branch receives a push.
+    # Do not deploy for pull requests.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     runs-on: ubuntu-latest
 
-    environment: staging
+    environment:
+      name: staging
 
     steps:
+
+      # --------------------------------------------------------
+      # Deploy through SSH
+      # --------------------------------------------------------
 
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.2.2
 
         with:
+
+          # GitHub Repository Secrets
           host: ${{ secrets.STAGING_HOST }}
           username: ${{ secrets.STAGING_USER }}
           key: ${{ secrets.STAGING_SSH_KEY }}
 
           script: |
 
-            echo "===================================="
-            echo "Starting deployment"
-            echo "===================================="
+            # ==================================================
+            # STOP ON ERROR
+            # ==================================================
 
-            # Load NVM
+            set -e
+
+
+            echo "=============================================="
+            echo "        STARTING STAGING DEPLOYMENT"
+            echo "=============================================="
+
+
+            # ==================================================
+            # LOAD NVM
+            # ==================================================
+
+            echo ""
+            echo "===== Loading NVM ====="
+
             export NVM_DIR="$HOME/.nvm"
 
-            if [ -s "$NVM_DIR/nvm.sh" ]; then
-              source "$NVM_DIR/nvm.sh"
+            if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+              echo "ERROR: NVM was not found at:"
+              echo "$NVM_DIR"
+              exit 1
             fi
 
+            source "$NVM_DIR/nvm.sh"
+
+
+            # ==================================================
+            # USE NODE 22
+            # ==================================================
+
+            echo ""
+            echo "===== Using Node.js 22 ====="
+
+            nvm use 22
+
+
+            echo ""
             echo "Node version:"
             node -v
 
+            echo ""
             echo "NPM version:"
             npm -v
 
 
-            # ----------------------------------
-            # Create apps directory
-            # ----------------------------------
+            # ==================================================
+            # CHECK NODE PATH
+            # ==================================================
 
-            mkdir -p ~/apps
+            echo ""
+            echo "Node path:"
+            which node
 
-            cd ~/apps
+            echo ""
+            echo "NPM path:"
+            which npm
 
 
-            # ----------------------------------
-            # Clone repository first time
-            # ----------------------------------
+            # ==================================================
+            # PM2
+            # ==================================================
 
-            if [ ! -d "node-staging/.git" ]; then
+            echo ""
+            echo "===== Checking PM2 ====="
 
-              echo "Repository does not exist."
-              echo "Cloning repository..."
+            if command -v pm2 >/dev/null 2>&1; then
 
-              rm -rf node-staging
+              echo "PM2 already available."
 
-              git clone git@github.com:eemailkrishna/node-staging.git node-staging
+            else
+
+              echo "PM2 not found."
+
+              echo "Installing PM2..."
+
+              npm install -g pm2
 
             fi
 
 
-            # ----------------------------------
-            # Go to application
-            # ----------------------------------
+            echo ""
+            echo "PM2 path:"
+            which pm2
 
-            cd ~/apps/node-staging
+            echo ""
+            echo "PM2 version:"
+            pm2 -v
 
 
-            # ----------------------------------
-            # Get latest code
-            # ----------------------------------
+            # ==================================================
+            # APPLICATION DIRECTORY
+            # ==================================================
 
-            echo "Pulling latest code..."
+            echo ""
+            echo "===== Preparing application directory ====="
+
+            mkdir -p "$HOME/apps"
+
+            cd "$HOME/apps"
+
+
+            # ==================================================
+            # CLONE REPOSITORY IF FIRST DEPLOYMENT
+            # ==================================================
+
+            if [ ! -d "node-staging/.git" ]; then
+
+              echo ""
+              echo "Repository not found."
+
+              echo "Cloning repository..."
+
+              rm -rf node-staging
+
+              git clone \
+                git@github.com:eemailkrishna/node-staging.git \
+                node-staging
+
+            else
+
+              echo ""
+              echo "Repository already exists."
+
+            fi
+
+
+            # ==================================================
+            # GO TO PROJECT
+            # ==================================================
+
+            cd "$HOME/apps/node-staging"
+
+            echo ""
+            echo "Application directory:"
+            pwd
+
+
+            # ==================================================
+            # UPDATE CODE
+            # ==================================================
+
+            echo ""
+            echo "===== Updating code ====="
 
             git fetch origin main
 
             git reset --hard origin/main
 
 
-            # ----------------------------------
-            # Install dependencies
-            # ----------------------------------
+            echo ""
+            echo "Current commit:"
+            git rev-parse --short HEAD
 
-            echo "Installing dependencies..."
+
+            # ==================================================
+            # INSTALL DEPENDENCIES
+            # ==================================================
+
+            echo ""
+            echo "===== Installing dependencies ====="
 
             if [ -f package-lock.json ]; then
+
+              echo "package-lock.json found."
+
               npm ci
+
             else
+
+              echo "package-lock.json not found."
+
               npm install
+
             fi
 
 
-            # ----------------------------------
-            # Build if build script exists
-            # ----------------------------------
+            # ==================================================
+            # BUILD
+            # ==================================================
 
-            if npm run | grep -q " build"; then
-              echo "Build script found. Running build..."
+            echo ""
+            echo "===== Checking build script ====="
+
+            BUILD_SCRIPT=$(npm pkg get scripts.build 2>/dev/null || echo "undefined")
+
+            if [ "$BUILD_SCRIPT" != "undefined" ] && [ "$BUILD_SCRIPT" != "{}" ]; then
+
+              echo "Build script found."
+
               npm run build
+
             else
-              echo "No build script found. Skipping build."
+
+              echo "No build script found."
+
+              echo "Skipping build."
+
             fi
 
 
-            # ----------------------------------
-            # Start / Restart PM2
-            # ----------------------------------
+            # ==================================================
+            # PM2 APPLICATION
+            # ==================================================
 
-            echo "Checking PM2..."
+            echo ""
+            echo "===== Managing PM2 application ====="
 
-            if pm2 describe node-staging > /dev/null 2>&1; then
+
+            if pm2 describe node-staging >/dev/null 2>&1; then
 
               echo "Application already exists in PM2."
-              echo "Restarting..."
+
+              echo "Restarting application..."
 
               pm2 restart node-staging
 
             else
 
-              echo "Application not found in PM2."
+              echo "Application does not exist in PM2."
+
               echo "Starting application..."
 
               pm2 start npm \
@@ -187,15 +352,29 @@ jobs:
             fi
 
 
-            # ----------------------------------
-            # Save PM2
-            # ----------------------------------
+            # ==================================================
+            # SAVE PM2
+            # ==================================================
+
+            echo ""
+            echo "===== Saving PM2 process ====="
 
             pm2 save
 
 
-            echo "===================================="
-            echo "Deployment completed successfully"
-            echo "===================================="
+            # ==================================================
+            # FINAL STATUS
+            # ==================================================
+
+            echo ""
+            echo "=============================================="
+            echo "          PM2 STATUS"
+            echo "=============================================="
 
             pm2 status
+
+
+            echo ""
+            echo "=============================================="
+            echo "      DEPLOYMENT COMPLETED SUCCESSFULLY"
+            echo "=============================================="
