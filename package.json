@@ -3,12 +3,23 @@
   "version": "1.0.0",
   "description": "Simple Hello API in Node.js",
   "type": "module",
-  "main": "server.js",
+  "main": "dist/server.js",
   "scripts": {
-    "start": "node server.js",
-    "test": "node --check server.js && node test-smoke.js"
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx watch server.ts",
+    "test": "npm run build && node dist/test-smoke.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
   }
 }

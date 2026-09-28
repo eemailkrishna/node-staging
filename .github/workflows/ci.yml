@@ -67,7 +67,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          node --check server.js
+          npm run build
 
 
       # --------------------------------------------------------
