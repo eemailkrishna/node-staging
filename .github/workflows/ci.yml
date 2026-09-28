@@ -3,18 +3,29 @@ name: CI/CD
 on:
   push:
     branches: [main]
+
   pull_request:
     branches: [main]
 
 jobs:
+
+  # ==========================================
+  # CI
+  # ==========================================
+
   ci:
     name: CI - install, check, smoke test
+
     runs-on: ubuntu-latest
+
     strategy:
       matrix:
         node-version: [18, 20, 22]
+
     steps:
-      - uses: actions/checkout@v4
+
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -37,42 +48,154 @@ jobs:
         env:
           PORT: 3457
 
+
+  # ==========================================
+  # CD - STAGING
+  # ==========================================
+
   cd-staging:
     name: CD - deploy to staging
+
     needs: ci
+
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
     runs-on: ubuntu-latest
+
     environment: staging
+
     steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.2
+
         with:
-          node-version: 22
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
 
-      - name: Install (no dev, if lockfile exists)
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci --omit=dev
-          else
-            npm install --omit=dev
-          fi
+          script: |
 
-      - name: Staging smoke test
-        run: npm test
-        env:
-          PORT: 3457
+            echo "===================================="
+            echo "Starting deployment"
+            echo "===================================="
 
-      # TODO: replace with your real deploy step, e.g. SSH / rsync / Docker / XAMPP copy.
-      # Example:
-      # - name: Deploy over SSH
-      #   uses: appleboy/scp-action@v0.1.7
-      #   with:
-      #     host: ${{ secrets.STAGING_HOST }}
-      #     username: ${{ secrets.STAGING_USER }}
-      #     key: ${{ secrets.STAGING_SSH_KEY }}
-      #     source: "server.js,package.json"
-      #     target: "/path/to/staging/node-staging"
-      - name: Deploy placeholder
-        run: echo "Add STAGING_HOST secrets + deploy step for your XAMPP/staging server."
+            # Load NVM
+            export NVM_DIR="$HOME/.nvm"
+
+            if [ -s "$NVM_DIR/nvm.sh" ]; then
+              source "$NVM_DIR/nvm.sh"
+            fi
+
+            echo "Node version:"
+            node -v
+
+            echo "NPM version:"
+            npm -v
+
+
+            # ----------------------------------
+            # Create apps directory
+            # ----------------------------------
+
+            mkdir -p ~/apps
+
+            cd ~/apps
+
+
+            # ----------------------------------
+            # Clone repository first time
+            # ----------------------------------
+
+            if [ ! -d "node-staging/.git" ]; then
+
+              echo "Repository does not exist."
+              echo "Cloning repository..."
+
+              rm -rf node-staging
+
+              git clone git@github.com:eemailkrishna/node-staging.git node-staging
+
+            fi
+
+
+            # ----------------------------------
+            # Go to application
+            # ----------------------------------
+
+            cd ~/apps/node-staging
+
+
+            # ----------------------------------
+            # Get latest code
+            # ----------------------------------
+
+            echo "Pulling latest code..."
+
+            git fetch origin main
+
+            git reset --hard origin/main
+
+
+            # ----------------------------------
+            # Install dependencies
+            # ----------------------------------
+
+            echo "Installing dependencies..."
+
+            if [ -f package-lock.json ]; then
+              npm ci
+            else
+              npm install
+            fi
+
+
+            # ----------------------------------
+            # Build if build script exists
+            # ----------------------------------
+
+            if npm run | grep -q " build"; then
+              echo "Build script found. Running build..."
+              npm run build
+            else
+              echo "No build script found. Skipping build."
+            fi
+
+
+            # ----------------------------------
+            # Start / Restart PM2
+            # ----------------------------------
+
+            echo "Checking PM2..."
+
+            if pm2 describe node-staging > /dev/null 2>&1; then
+
+              echo "Application already exists in PM2."
+              echo "Restarting..."
+
+              pm2 restart node-staging
+
+            else
+
+              echo "Application not found in PM2."
+              echo "Starting application..."
+
+              pm2 start npm \
+                --name node-staging \
+                -- start
+
+            fi
+
+
+            # ----------------------------------
+            # Save PM2
+            # ----------------------------------
+
+            pm2 save
+
+
+            echo "===================================="
+            echo "Deployment completed successfully"
+            echo "===================================="
+
+            pm2 status
